@@ -316,19 +316,18 @@ def compute_record_linkage(df_full):
 
     print("Setting up blocking for pairwise comparisons")
     _blocking_indices = [
-        recordlinkage.BlockIndex(on="APN"),
+        #recordlinkage.BlockIndex(on="APN"),
         recordlinkage.BlockIndex(on="Address Full"),
         recordlinkage.BlockIndex(on=["Street Name", "Zip Code"]),
     ]
 
     print("Finding blocked pairs")
-    blocking_indices = [bi.index(df_full) for bi in _blocking_indices]
     pairs = None
-    for p2 in blocking_indices:
+    for bi in _blocking_indices:
         if pairs is not None:
-            pairs = pairs.union(p2)
+            pairs = pairs.union(bi.index(df_full))
         else:
-            pairs = p2
+            pairs = bi.index(df_full)
 
     print("Setting up similarity calculations")
     compare_cl = recordlinkage.Compare()
@@ -386,7 +385,8 @@ def form_clusters(df_full, features):
 
 if __name__ == '__main__':
 
-    df_full = concat_datasets_and_save()
+    #df_full = concat_datasets_and_save()
+    df_full = pd.read_csv(TEMP_OUTPUT_FILE)
 
     df_full['Address Full'] = df_full['Address Full'].astype(unicode)
     df_full['Street Name'] = df_full['Street Name'].astype(unicode)
