@@ -111,11 +111,6 @@ def strip_punct(in_string):
     """Delete punctuation from string"""
     return str(in_string).translate(None, string.punctuation)
 
-PUNCT_TO_SPACE = string.maketrans(string.punctuation, " "*len(string.punctuation))
-def punct_to_space(in_string):
-    """Replace punctuation from string"""
-    return str(in_string).translate(PUNCT_TO_SPACE)
-
 def clean_spaces(in_string):
     """Remove multi-spaces"""
     return ' '.join(str(in_string).split())
@@ -259,7 +254,7 @@ def process_building_and_demolition_file(xls_filename):
 def process_rso_inventory(xls_filename):
     """Read in and apply formatting to the rso inventory file"""
 
-    df_rso = pd.read_excel(ALL_RSO_XLS_FILE, sheetname=None)
+    df_rso = pd.read_excel(xls_filename, sheetname=None)
     df_rso = pd.concat(df_rso, axis=0).reset_index(drop=True)
 
     df_rso.APN = df_rso.APN.astype(str)
@@ -316,7 +311,7 @@ def compute_record_linkage(df_full):
 
     print("Setting up blocking for pairwise comparisons")
     _blocking_indices = [
-        #recordlinkage.BlockIndex(on="APN"),
+        recordlinkage.BlockIndex(on="APN"),
         recordlinkage.BlockIndex(on="Address Full"),
         recordlinkage.BlockIndex(on=["Street Name", "Zip Code"]),
     ]
@@ -360,11 +355,11 @@ def form_clusters(df_full, features):
     matches = features[features.sum(axis=1) >= LINKAGE_THRESHOLD]
 
     graph = nx.Graph()
-    for i in xrange(df_full.shape[0]):
-        graph.add_node(i)
+    for node_num in xrange(df_full.shape[0]):
+        graph.add_node(node_num)
     print('Num nodes: {}'.format(graph.number_of_nodes()))
 
-    for pair, match_feats in matches.iterrows():
+    for pair, _ in matches.iterrows():
         graph.add_edge(*pair)    
     print('Num edges: {}'.format(graph.number_of_edges()))
 
@@ -374,8 +369,8 @@ def form_clusters(df_full, features):
     comp_num = 0
     row_to_group = {}
     for comp in nx.connected_components(graph):
-        for r in list(comp):
-            row_to_group[r] = comp_num
+        for row_num in list(comp):
+            row_to_group[row_num] = comp_num
         comp_num += 1
 
     df_full['Property ID'] = pd.Series(df_full.index).apply(lambda x: row_to_group[x])
@@ -385,17 +380,18 @@ def form_clusters(df_full, features):
 
 if __name__ == '__main__':
 
-    #df_full = concat_datasets_and_save()
-    df_full = pd.read_csv(TEMP_OUTPUT_FILE)
+    #df_data = concat_datasets_and_save()
+    df_data = pd.read_csv(TEMP_OUTPUT_FILE)
 
-    df_full['Address Full'] = df_full['Address Full'].astype(unicode)
-    df_full['Street Name'] = df_full['Street Name'].astype(unicode)
-    df_full['Address Number (float)'] = df_full['Address Number'].apply(string_to_numeric)
+    df_data['Address Full'] = df_data['Address Full'].astype(unicode)
+    df_data['Street Name'] = df_data['Street Name'].astype(unicode)
+    df_data['Address Number (float)'] = df_data['Address Number'].apply(string_to_numeric)
 
-    features = compute_record_linkage(df_full)
+    features = compute_record_linkage(df_data)
 
     # Look at the distribution of feature-scores
     #features.sum(axis=1).value_counts(bins=50).sort_index(ascending=False)
 
     LINKAGE_THRESHOLD = 3.5
-    df_full = form_clusters(df_full, features)
+    df_data = form_clusters(df_data, features)
+
