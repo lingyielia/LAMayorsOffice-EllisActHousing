@@ -2,10 +2,13 @@
 
 import os
 import string
+import re
 
 import usaddress as ua
 import pandas as pd
-import census_geocode as cg
+
+import networkx as nx
+import recordlinkage
 
 DATA_DIR = os.path.expanduser('~/GitHub/la_mayors_office/data')
 SAVE_DIR = os.path.expanduser('~/GitHub/la_mayors_office/data/processed')
@@ -24,6 +27,24 @@ ADDRESS_FIELD_PARSE_NAMES = {
     'PlaceName': 'City',
     'StateName': 'State'
 }
+
+
+PUNCT_TO_SPACE = string.maketrans(string.punctuation, " "*len(string.punctuation))
+def punct_to_space(in_string):
+    """Replace punctuation from string"""
+    return str(in_string).translate(PUNCT_TO_SPACE)
+
+
+NON_DECIMAL_RE = re.compile(r'[^\d.]+')
+def string_to_numeric(in_string):
+    """Get numeric house number"""
+    try:
+        just_numeric = NON_DECIMAL_RE.sub('', punct_to_space(in_string).split()[0])
+        if just_numeric:
+            return float(just_numeric)
+    except IndexError:
+        pass
+    return None
 
 # The processing functions in this file are designed to handle these
 # particular files
@@ -53,6 +74,7 @@ DEMOBUILD_PERMIT_XLS_FILE = os.path.join(
 
 
 TEMP_OUTPUT_FILE = os.path.join(SAVE_DIR, "la_housing_dataset_no_geo.csv")
+FINAL_OUTPUT_FILE = os.path.join(SAVE_DIR, "la_housing_dataset_no_geo_property_id.csv")
 
 
 # This is the list of colums used in the final file
@@ -89,6 +111,10 @@ def strip_punct(in_string):
     """Delete punctuation from string"""
     return str(in_string).translate(None, string.punctuation)
 
+PUNCT_TO_SPACE = string.maketrans(string.punctuation, " "*len(string.punctuation))
+def punct_to_space(in_string):
+    """Replace punctuation from string"""
+    return str(in_string).translate(PUNCT_TO_SPACE)
 
 def clean_spaces(in_string):
     """Remove multi-spaces"""
@@ -98,7 +124,7 @@ def clean_spaces(in_string):
 def parse_addy(str_addy):
     """Parse a string address into a series"""
 
-    str_addy = str_addy.lower()
+    str_addy = str(str_addy).lower()
     try:
         parse_tuples = ua.parse(str_addy)
     except:
@@ -137,7 +163,8 @@ def process_withdrawal_file(xls_filename):
     df_ellis = df_ellis.rename(
         columns={
             'Date Filed': 'Status Date',
-            'Address': 'Address Full'
+            'Address': 'Address Full',
+            'Zip': 'Zip Code'
         }
     )
 
@@ -190,7 +217,6 @@ def process_entitlements_file(xls_filename):
     return df_ent
 
 
-
 def process_building_and_demolition_file(xls_filename):
     """Read in and apply formatting to the demolitions file"""
 
@@ -207,7 +233,7 @@ def process_building_and_demolition_file(xls_filename):
             'WORK DESCRIPTION': 'Work Description',
             'STATUS': 'Status',
             'ISSUE DATE': 'Status Date',
-            'ZIP': 'Zip Code'
+            'ZIP CODE': 'Zip Code'
         }
     )
 
@@ -230,51 +256,6 @@ def process_building_and_demolition_file(xls_filename):
     return df_demo
 
 
-
-def DEPRECATED_process_demolition_file(csv_filename):
-    """Read in and apply formatting to the demolitions file"""
-
-    df_demo = pd.read_csv(csv_filename, low_memory=False, dtype=str)
-
-    demolition_idx = df_demo['Permit Type'].isin(['Bldg-Demolition', 'NonBldg-Demolition'])
-
-    # Make APN
-    df_demo["APN"] = make_apn(df_demo)
-
-    # Add in 'General Category'
-    df_demo["General Category"] = 'Demolition Permits'
-
-    df_demo = df_demo.loc[demolition_idx, COLUMN_ORDER]
-
-    # Fix datetime dtype
-    df_demo['Status Date'] = pd.to_datetime(df_demo['Status Date'])
-    df_demo = df_demo[[c for c in COLUMN_ORDER if c in df_demo]]
-
-    return df_demo
-
-
-def DEPRECATED_process_building_file(csv_filename):
-    """Read in and apply formatting to the building permits file"""
-
-    df_building = pd.read_csv(csv_filename, low_memory=False, dtype=str)
-
-    building_idx = ~df_building['Permit Type'].isin(['Bldg-Demolition', 'NonBldg-Demolition'])
-
-    # Make APN
-    df_building["APN"] = make_apn(df_building)
-
-    # Add in 'General Category'
-    df_building["General Category"] = 'Building Permits'
-
-    df_building = df_building.loc[building_idx, COLUMN_ORDER]
-
-    # Fix datetime dtype
-    df_building['Status Date'] = pd.to_datetime(df_building['Status Date'])
-    df_building = df_building[[c for c in COLUMN_ORDER if c in df_building]]
-
-    return df_building
-
-
 def process_rso_inventory(xls_filename):
     """Read in and apply formatting to the rso inventory file"""
 
@@ -289,7 +270,7 @@ def process_rso_inventory(xls_filename):
     # Fix datetime dtype
     df_rso = df_rso.rename(
         columns={
-            'Property_Zip_Code': 'Zip',
+            'Property_Zip_Code': 'Zip Code',
             'Property_Street_Address': 'Address Full',
             'Unit_Count': 'Unit Count',
             'Council_District': 'Council District'
@@ -301,34 +282,6 @@ def process_rso_inventory(xls_filename):
     df_rso = df_rso[[c for c in COLUMN_ORDER if c in df_rso]]
 
     return df_rso
-
-
-def process_inspections_file(csv_filename):
-    """Read in and apply formatting to the building inspections file"""
-
-    df_inspect = pd.read_csv(csv_filename, low_memory=False, dtype=str)
-    df_inspect = df_inspect.rename(
-        columns={
-            'Status Date': 'Status Date',
-            'Permit Issue Date': 'Original Issue Date',
-            'ADDRESS': 'Address Full',
-            'PROJ_DESC': 'Work Description',
-            'PROCESSINGUNIT': 'Permit Type',
-            'CASE_NBR': 'Permit #',
-            "Address Start": "Address Number",
-            "Unit Range Start": "Unit Number",
-        }
-    )
-
-    # Fix datetime dtype
-    df_inspect['Original Issue Date'] = pd.to_datetime(df_inspect['Original Issue Date'])
-    df_inspect['Status Date'] = pd.to_datetime(df_inspect['Status Date'])
-
-    # Make APN
-    df_inspect["APN"] = make_apn(df_inspect)
-
-    df_inspect = df_inspect[[c for c in COLUMN_ORDER if c in df_inspect]]
-    return df_inspect
 
 
 def concat_datasets_and_save():
@@ -345,29 +298,104 @@ def concat_datasets_and_save():
     print("Loading demolitions + building file")
     dataset_list.append(process_building_and_demolition_file(DEMOBUILD_PERMIT_XLS_FILE))
 
+    print('Loading inventory of RSO units')
+    dataset_list.append(process_rso_inventory(ALL_RSO_XLS_FILE))
+
     df_full = pd.concat(dataset_list, axis=0).fillna(value='').reset_index(drop=True)
+
     df_full.to_csv(TEMP_OUTPUT_FILE, index=False, encoding='utf-8')
 
     return df_full
 
 
+def compute_record_linkage(df_full):
+    """Given the fully-concatenated table of records
+    calculate which pairs are address-matches using
+    fuzzy matching on street name, unit number and zipcode
+    """
+
+    print("Setting up blocking for pairwise comparisons")
+    _blocking_indices = [
+        recordlinkage.BlockIndex(on="APN"),
+        recordlinkage.BlockIndex(on="Address Full"),
+        recordlinkage.BlockIndex(on=["Street Name", "Zip Code"]),
+    ]
+
+    print("Finding blocked pairs")
+    blocking_indices = [bi.index(df_full) for bi in _blocking_indices]
+    pairs = None
+    for p2 in blocking_indices:
+        if pairs is not None:
+            pairs = pairs.union(p2)
+        else:
+            pairs = p2
+
+    print("Setting up similarity calculations")
+    compare_cl = recordlinkage.Compare()
+
+    compare_cl.numeric('Address Number (float)', 'Address Number (float)',
+                       offset=3, scale=2,
+                       label='address_number'
+    )
+    compare_cl.string('Street Name', 'Street Name',
+                      method='levenshtein',
+                      threshold=0.9,
+                      label='street name')
+
+    compare_cl.exact('Address Full', 'Address Full', label='addy_full')
+    compare_cl.exact('Zip Code', 'Zip Code', label='zip')
+
+    print("Calculating similarities")
+    features = compare_cl.compute(pairs, df_full)
+    features.to_pickle(os.path.join(SAVE_DIR, "features.pickle"))
+    
+    return features
+
+
+def form_clusters(df_full, features):
+    """Given the full dataframe and a matrix of feature linkages,
+    append a column to the dataset that contains the property_id
+    that connects all properties toegether
+    """
+
+    matches = features[features.sum(axis=1) >= LINKAGE_THRESHOLD]
+
+    graph = nx.Graph()
+    for i in xrange(df_full.shape[0]):
+        graph.add_node(i)
+    print('Num nodes: {}'.format(graph.number_of_nodes()))
+
+    for pair, match_feats in matches.iterrows():
+        graph.add_edge(*pair)    
+    print('Num edges: {}'.format(graph.number_of_edges()))
+
+    graph = graph.to_undirected()
+
+    # Finding connected clusters in the graph
+    comp_num = 0
+    row_to_group = {}
+    for comp in nx.connected_components(graph):
+        for r in list(comp):
+            row_to_group[r] = comp_num
+        comp_num += 1
+
+    df_full['Property ID'] = pd.Series(df_full.index).apply(lambda x: row_to_group[x])
+    df_full.to_csv(FINAL_OUTPUT_FILE, index=False, encoding='utf-8')
+    
+    return df_full
+
 if __name__ == '__main__':
 
     df_full = concat_datasets_and_save()
 
-    print('Loading inventory of RSO units')
-    df_rso = process_rso_inventory()
+    df_full['Address Full'] = df_full['Address Full'].astype(unicode)
+    df_full['Street Name'] = df_full['Street Name'].astype(unicode)
+    df_full['Address Number (float)'] = df_full['Address Number'].apply(string_to_numeric)
 
-    # TODO: run geocoding on parsed addresses after we get APNs/ZIPs for everybody
+    features = compute_record_linkage(df_full)
 
-    # Assign new geocoded coordinates to every row?
-    #df_full_geocode = cg.geocode_full_dataframe(df_full, 'v1_full')
-    #df_rso_geocode = cg.geocode_full_dataframe(df_rso, 'v1_rso')
+    # Look at the distribution of feature-scores
+    #features.sum(axis=1).value_counts(bins=50).sort_index(ascending=False)
 
-    # TODO: merge rso inventory into full data file
-
-    #df_full['Address for geocoding'] = df_new_geo['Address for geocoding']
-    #df_full['Latitude/Longitude (2)'] = df_new_geo['Latitude/Longitude (2)']
-
-    # Assign new property id to each row based on geocoding and street name/zip match
-
+    LINKAGE_THRESHOLD = 3.5
+    df_full = form_clusters(df_full, features)
