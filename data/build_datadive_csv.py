@@ -309,9 +309,10 @@ def compute_record_linkage(df_full):
 
     print("Setting up blocking for pairwise comparisons")
     _blocking_indices = [
-        recordlinkage.BlockIndex(on="APN"),
-        recordlinkage.BlockIndex(on="Address Full"),
-        recordlinkage.BlockIndex(on=["Street Name", "Zip Code"]),
+        #recordlinkage.BlockIndex(on="APN"),
+        #recordlinkage.BlockIndex(on="Address Full"),
+        #recordlinkage.BlockIndex(on=["Street Name", "Zip Code"]),
+        recordlinkage.BlockIndex(on=["Street Name", "Address Number (float)"]),
     ]
 
     print("Finding blocked pairs")
@@ -334,8 +335,8 @@ def compute_record_linkage(df_full):
                       threshold=0.9,
                       label='street name')
 
-    compare_cl.exact('Address Full', 'Address Full', label='addy_full')
-    compare_cl.exact('Zip Code', 'Zip Code', label='zip')
+    #compare_cl.exact('Address Full', 'Address Full', label='addy_full')
+    #compare_cl.exact('Zip Code', 'Zip Code', label='zip')
 
     print("Calculating similarities")
     features = compare_cl.compute(pairs, df_full)
@@ -399,7 +400,7 @@ if __name__ == '__main__':
     # Look at the distribution of feature-scores
     #features.sum(axis=1).value_counts(bins=50).sort_index(ascending=False)
 
-    LINKAGE_THRESHOLD = 3.5
+    LINKAGE_THRESHOLD = 2.0
     df_data = form_clusters(df_data, features)
 
-    #aws s3 cp ~/GitHub/la_mayor_data/data/processed/la_housing_dataset_no_geo_property_id.csv s3://datadive-democraticfreedom-nyc/LA\ Mayor\'s\ Office\ -\ Housing/Cleaned\ Data/ 
+    #aws s3 cp ~/GitHub/la_mayors_office/data/processed/la_housing_dataset_no_geo_property_id.csv s3://datadive-democraticfreedom-nyc/LA\ Mayor\'s\ Office\ -\ Housing/Cleaned\ Data/ 
