@@ -74,36 +74,35 @@ DEMOBUILD_PERMIT_XLS_FILE = os.path.join(
 
 
 TEMP_OUTPUT_FILE = os.path.join(SAVE_DIR, "la_housing_dataset_no_geo.csv")
+FEATURES_OUTPUT_FILE = os.path.join(SAVE_DIR, "features.pickle")
 FINAL_OUTPUT_FILE = os.path.join(SAVE_DIR, "la_housing_dataset_no_geo_property_id.csv")
 
 
 # This is the list of colums used in the final file
 COLUMN_ORDER = [
-    "General Category",
+    "Property ID",
     "APN",
-    "Latitude/Longitude",
-
-    "Address Full",
-    "Address Number",
-    "Street Direction",
-    "Street Name",
-    "Street Suffix",
-    "Unit Count",
-    "Unit Number",
-    "Unit Type",
-    "City",
-    "State",
-    "Zip Code",
-    "Council District",
-
+    "General Category",
     "Status",
     "Status Date",
-    "Original Issue Date",
     "Completion Date",
     "Permit #",
     "Permit Type",
     "Permit Sub-Type",
     "Work Description",
+    "Address Full",
+    "Address Number",
+    "Address Number (float)",
+    "Street Direction",
+    "Street Name",
+    "Street Suffix",
+    "City",
+    "State",
+    "Zip Code",
+    "Unit Count",
+    "Unit Number",
+    "Unit Type",
+    "Council District",
 ]
 
 
@@ -259,10 +258,8 @@ def process_rso_inventory(xls_filename):
 
     df_rso.APN = df_rso.APN.astype(str)
     df_rso.Property_Zip_Code = df_rso.Property_Zip_Code.astype(str)
-
     df_rso.Property_Street_Address = df_rso.Property_Street_Address.apply(strip_punct)
 
-    # Fix datetime dtype
     df_rso = df_rso.rename(
         columns={
             'Property_Zip_Code': 'Zip Code',
@@ -274,6 +271,7 @@ def process_rso_inventory(xls_filename):
 
     df_addy = df_rso['Address Full'].apply(parse_addy)
     df_rso = pd.concat([df_rso, df_addy], axis=1)
+    df_rso["General Category"] = "Is in RSO Inventory"
     df_rso = df_rso[[c for c in COLUMN_ORDER if c in df_rso]]
 
     return df_rso
@@ -329,8 +327,8 @@ def compute_record_linkage(df_full):
 
     compare_cl.numeric('Address Number (float)', 'Address Number (float)',
                        offset=3, scale=2,
-                       label='address_number'
-    )
+                       label='address_number')
+
     compare_cl.string('Street Name', 'Street Name',
                       method='levenshtein',
                       threshold=0.9,
@@ -341,7 +339,7 @@ def compute_record_linkage(df_full):
 
     print("Calculating similarities")
     features = compare_cl.compute(pairs, df_full)
-    features.to_pickle(os.path.join(SAVE_DIR, "features.pickle"))
+    features.to_pickle(FEATURES_OUTPUT_FILE)
     
     return features
 
@@ -374,20 +372,29 @@ def form_clusters(df_full, features):
         comp_num += 1
 
     df_full['Property ID'] = pd.Series(df_full.index).apply(lambda x: row_to_group[x])
+    df_full = df_full[[c for c in COLUMN_ORDER if c in df_full]]
     df_full.to_csv(FINAL_OUTPUT_FILE, index=False, encoding='utf-8')
     
     return df_full
 
 if __name__ == '__main__':
 
-    #df_data = concat_datasets_and_save()
-    df_data = pd.read_csv(TEMP_OUTPUT_FILE)
+    if os.path.exists(TEMP_OUTPUT_FILE):
+        print('Reading temp file from {}'.format(TEMP_OUTPUT_FILE))
+        df_data = pd.read_csv(TEMP_OUTPUT_FILE)
+    else:
+        df_data = concat_datasets_and_save()
 
     df_data['Address Full'] = df_data['Address Full'].astype(unicode)
     df_data['Street Name'] = df_data['Street Name'].astype(unicode)
     df_data['Address Number (float)'] = df_data['Address Number'].apply(string_to_numeric)
 
-    features = compute_record_linkage(df_data)
+    if os.path.exists(FEATURES_OUTPUT_FILE):
+        print('Loading features from saved file {}'.format(FEATURES_OUTPUT_FILE))
+        with open(FEATURES_OUTPUT_FILE, 'rb') as file:
+            features = pickle.load(file)
+    else:
+        features = compute_record_linkage(df_data)
 
     # Look at the distribution of feature-scores
     #features.sum(axis=1).value_counts(bins=50).sort_index(ascending=False)
@@ -395,3 +402,4 @@ if __name__ == '__main__':
     LINKAGE_THRESHOLD = 3.5
     df_data = form_clusters(df_data, features)
 
+    #aws s3 cp ~/GitHub/la_mayor_data/data/processed/la_housing_dataset_no_geo_property_id.csv s3://datadive-democraticfreedom-nyc/LA\ Mayor\'s\ Office\ -\ Housing/Cleaned\ Data/ 
