@@ -5,7 +5,7 @@ LA Mayor's Office - Ellis Act/Housing DemFree DataDive repo for all code
 ### Here's a description of data columns in the .csv
 
 **Property ID**
-    This is a unique property identifier that we computed (not LA). This was made by fuzzy matching on combinations of street address and ZIP code so we can track different permits coming from the same location
+    This is a unique property identifier that we computed (not LA). Rows were matched together if they shared an `APN` *or* is they matched on `address number` + fuzzy-matched on `street name` + `zip code`. This allows us to link places together across datasets. But, note that it's not perfect -- for example it ignores 'unit number' in matching so large apartment complexes that share a street address will be merged to a single `Property ID` even if they're distinct legel entities with their own APNs
 
 **APN**
     The Los Angeles County "Assessor Parcel Number". This is usually a good way to identify a property, but the value can change following big developments that split/merge properties.
@@ -68,9 +68,10 @@ LA Mayor's Office - Ellis Act/Housing DemFree DataDive repo for all code
     Number of units in this building
 
 **Unit Number**
-    Unit number relevant for this permit
+    Unit number relevant for this permit. For records where this wasn't explicitly provided, it was parsed out using the package [`usaddress`](https://pypi.python.org/pypi/usaddress).
 
 **Unit Type**
+    Unit type (e.g., 'Apt', 'Unit', 'Floor') relevant for this permit. For records where this wasn't explicitly provided, it was parsed out using the package [`usaddress`](https://pypi.python.org/pypi/usaddress).
 
 **Council District**
     The City of Los Angeles council district that has jurisdiction over the property.

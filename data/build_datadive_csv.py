@@ -3,12 +3,16 @@
 import os
 import string
 import re
+import pickle
 
-import usaddress as ua
+import numpy as np
+
 import pandas as pd
-
-import networkx as nx
 import recordlinkage
+import networkx as nx
+
+from tqdm import tqdm
+import usaddress as ua
 
 DATA_DIR = os.path.expanduser('~/GitHub/la_mayors_office/data')
 SAVE_DIR = os.path.expanduser('~/GitHub/la_mayors_office/data/processed')
@@ -22,12 +26,23 @@ ADDRESS_FIELD_PARSE_NAMES = {
     'StreetName': 'Street Name',
     'StreetNamePostType': 'Street Suffix',
     'StreetNamePreDirectional': 'Street Direction',
-    'OccupancyType': 'Unit Type',
-    'OccupancyIdentifier': 'Unit Number',
     'PlaceName': 'City',
     'StateName': 'State'
 }
 
+STREET_SUFFIXES = set([
+    'ave', 'st', 'pl', 'blvd', 'dr', 'way', 'ter', 'road', 'rd',
+   'park', 'walk', 'cir', 'ct', 'hwy', 'cl', 'av', 'est',
+   'ss', 'bl', 'place', 'stst', 'bend', 'blblvd', 'ndr',
+   'al', 'summit', 'nn', 'green', 'creek', 'avenue', 'parkway', 'cyn',
+   'street', 'npl', 'vista', 'glen', 'plaza', 'rcd', 'lane', 'ridge',
+   'ast', 'heights', 'crossroad', 'tr', 'magdalena', 'pavia',
+   'pass', 'pkwy', 'mall', 'pz', 'terrace', 'crt', 
+   'court', 'cove', 'boulevard', 'sq',
+   'lvl', 'ln', 'ctr', 'grd', 'promenade', 'ck', 'circle',
+   'loop', 'mt', 'tsf', 'fls', 'flrs', 'mar',
+   'annex', 'rdg', 'strt', 'terr', 'pt', 'haven', 'trl', 'drive'
+])
 
 PUNCT_TO_SPACE = string.maketrans(string.punctuation, " "*len(string.punctuation))
 def punct_to_space(in_string):
@@ -36,13 +51,23 @@ def punct_to_space(in_string):
 
 
 NON_DECIMAL_RE = re.compile(r'[^\d.]+')
-def string_to_numeric(in_string):
+def string_to_float(in_string):
     """Get numeric house number"""
     try:
         just_numeric = NON_DECIMAL_RE.sub('', punct_to_space(in_string).split()[0])
         if just_numeric:
             return float(just_numeric)
     except IndexError:
+        pass
+    return None
+
+def string_to_int(in_string):
+    """Get int"""
+    try:
+        just_numeric = NON_DECIMAL_RE.sub('', punct_to_space(in_string).split()[0])
+        if just_numeric:
+            return int(just_numeric)
+    except ValueError:
         pass
     return None
 
@@ -59,18 +84,11 @@ WITHDRAWAL_XLS_FILE = os.path.join(
 ENTITLEMENTS_XLS_FILE = os.path.join(
     DATA_DIR, 'DCP Applications Filed 10Yrs.xlsx')
 
-#DEMO_PERMIT_CSV_FILE = os.path.join(
-#    DATA_DIR, "Building_and_Safety_Permit_Information.csv")
-
-#BUILDING_PERMIT_CSV_FILE = os.path.join(
-#    DATA_DIR, "Building_and_Safety_Permit_Information.csv")
+ENTITLEMENTS_XLS_FILE = os.path.join(
+    DATA_DIR, 'RawDataApplicationsFiled10Yrs_RunOn11072017.xlsx')
 
 DEMOBUILD_PERMIT_XLS_FILE = os.path.join(
     DATA_DIR, "Building Permit Records 2007-2017.xls")
-
-
-#OCCUPANCY_INSPECTION_CSV_FILE = os.path.join(
-#    DATA_DIR, "Building_and_Safety_Certificate_of_Occupancy.csv")
 
 
 TEMP_OUTPUT_FILE = os.path.join(SAVE_DIR, "la_housing_dataset_no_geo.csv")
@@ -153,9 +171,9 @@ def process_withdrawal_file(xls_filename):
     df_ellis.Address = df_ellis.Address.apply(strip_punct)
     df_ellis.Address = df_ellis.Address.apply(lambda x: clean_spaces(x.split(' CA ')[0]))
 
-    # Fix datetime dtype
     df_ellis = df_ellis.rename(
         columns={
+            'APN': 'APN',
             'Date Filed': 'Status Date',
             'Address': 'Address Full',
             'Zip': 'Zip Code'
@@ -166,6 +184,7 @@ def process_withdrawal_file(xls_filename):
     df_addy = df_ellis['Address Full'].apply(parse_addy)
     df_ellis = pd.concat([df_ellis, df_addy], axis=1)
 
+    # Fix datetime dtype
     df_ellis['Status Date'] = pd.to_datetime(df_ellis['Status Date'])
 
     # Add in 'General Category'
@@ -176,7 +195,7 @@ def process_withdrawal_file(xls_filename):
     return df_ellis
 
 
-def process_entitlements_file(xls_filename):
+def OLD_process_entitlements_file(xls_filename):
     """Read in and apply formatting to the entitlenments file"""
 
     df_ent = pd.read_excel(xls_filename, sheetname='Export Worksheet')
@@ -184,7 +203,6 @@ def process_entitlements_file(xls_filename):
     df_ent.ADDRESS = df_ent.ADDRESS.apply(strip_punct)
     df_ent.ADDRESS = df_ent.ADDRESS.apply(lambda x: clean_spaces(x.split(' CA ')[0]))
 
-    # Fix datetime dtype
     df_ent = df_ent.rename(
         columns={
             'FILING_DT': 'Status Date',
@@ -200,6 +218,106 @@ def process_entitlements_file(xls_filename):
     df_addy = df_ent['Address Full'].apply(parse_addy)
     df_ent = pd.concat([df_ent, df_addy], axis=1)
 
+    # Fix datetime dtype
+    df_ent['Status Date'] = pd.to_datetime(df_ent['Status Date'])
+    df_ent['Completion Date'] = pd.to_datetime(df_ent['Completion Date'])
+
+    # Add in 'General Category'
+    df_ent["General Category"] = 'Entitlement Change'
+
+    df_ent = df_ent[[c for c in COLUMN_ORDER if c in df_ent]]
+
+    return df_ent
+
+
+def stop_repeating_yourself(in_string):
+    """When did Jimmy Two-times get a dta entry job?
+    https://www.youtube.com/watch?v=CfW-MPUjC_0
+    """
+    sz = len(in_string)
+    half1, half2 = in_string[:sz//2], in_string[sz//2:]
+    if half1 == half2:
+        return half1
+    return in_string
+
+
+def drop_multiple_street_suffixes(tok_list):
+    suffix_idx_list = []
+    for key, val in enumerate(tok_list):
+        if val in STREET_SUFFIXES:
+            suffix_idx_list.append(key)
+    for to_drop in suffix_idx_list[1:][::-1]:
+        tok_list.pop(to_drop)
+    return tok_list
+
+
+def parse_addy_DCP(str_addy):
+    """Parse a string address from DCP file into a series"""
+
+    tok_addy = str(str_addy).lower().split()
+    tok_addy = drop_multiple_street_suffixes(tok_addy)
+    
+    if not tok_addy:
+        return pd.Series({})
+
+    try:
+        zipcode = int(tok_addy[-1])
+        str_addy = ' '.join(tok_addy[:-1])
+    except ValueError:
+        zipcode = np.nan
+        str_addy = ' '.join(tok_addy)
+
+    try:
+        parse_tuples = ua.parse(str_addy)
+    except:
+        parse_tuples = {}
+
+    parse_dict = {
+        ADDRESS_FIELD_PARSE_NAMES[t]:v
+        for v, t in parse_tuples
+        if t in ADDRESS_FIELD_PARSE_NAMES
+    }
+
+    if "Street Name" in parse_dict:
+        parse_dict["Street Name"] = stop_repeating_yourself(parse_dict["Street Name"])
+
+    if zipcode:
+        parse_dict["Zip Code"] = zipcode
+
+    return pd.Series(parse_dict)
+
+
+def process_entitlements_file(xls_filename):
+    df_ent = pd.read_excel(xls_filename, sheetname='Export Worksheet')   
+    
+    # Parse Address
+    df_ent.ADDRESS = df_ent.ADDRESS.apply(strip_punct)
+    df_addy = df_ent.ADDRESS.apply(parse_addy_DCP)
+    df_ent = pd.concat([df_ent, df_addy], axis=1)
+    
+    df_ent = df_ent.rename(
+        columns={
+            'APN': 'APN',
+            'FILING_DT': 'Status Date',
+            'COMPLETION_DT': 'Completion Date',
+            'ADDRESS': 'Address Full',
+            'PROJ_DESC': 'Work Description',
+            'PROCESSINGUNIT': 'Permit Type',
+            'CASE_NBR': 'Permit #',
+            'Address Number': 'Address Number',
+            'Street Direction': 'Street Direction',
+            'Street Name': 'Street Name',
+            'Street Suffix': 'Street Suffix',
+            'City': 'City',
+            'State': 'State',
+            'Zip Code': 'Zip Code',
+            'Unit Count': 'Unit Count',
+            'Unit Number': 'Unit Number',
+            'Unit Type': 'Unit Type',            
+        }
+    )
+
+    # Fix datetime dtype
     df_ent['Status Date'] = pd.to_datetime(df_ent['Status Date'])
     df_ent['Completion Date'] = pd.to_datetime(df_ent['Completion Date'])
 
@@ -217,7 +335,6 @@ def process_building_and_demolition_file(xls_filename):
     df_demo = pd.read_excel(xls_filename, sheetname=None)
     df_demo = pd.concat(df_demo, axis=0).reset_index(drop=True)
 
-    # Fix datetime dtype
     df_demo = df_demo.rename(
         columns={
             'PERMIT TYPE': 'Permit Type',
@@ -308,35 +425,37 @@ def compute_record_linkage(df_full):
     """
 
     print("Setting up blocking for pairwise comparisons")
-    _blocking_indices = [
-        #recordlinkage.BlockIndex(on="APN"),
-        #recordlinkage.BlockIndex(on="Address Full"),
-        #recordlinkage.BlockIndex(on=["Street Name", "Zip Code"]),
-        recordlinkage.BlockIndex(on=["Street Name", "Address Number (float)"]),
+    blocking_indices = [
+        recordlinkage.BlockIndex(on="APN (int)"),
+        recordlinkage.BlockIndex(on=["Address Number (float)", "Zip Code (int)"]),
     ]
 
     print("Finding blocked pairs")
     pairs = None
-    for bi in _blocking_indices:
-        if pairs is not None:
-            pairs = pairs.union(bi.index(df_full))
-        else:
-            pairs = bi.index(df_full)
+    for df_subset in tqdm(np.array_split(df_full, 10)):
+        for bi in blocking_indices:
+            _new_pairs = bi.index(df_full, df_subset)
+
+            if pairs is not None:
+                pairs = pairs.union(_new_pairs)
+            else:
+                pairs = _new_pairs
 
     print("Setting up similarity calculations")
     compare_cl = recordlinkage.Compare()
 
-    compare_cl.numeric('Address Number (float)', 'Address Number (float)',
-                       offset=3, scale=2,
-                       label='address_number')
+    compare_cl.exact('APN (int)', 'APN (int)', label='APN')
+    compare_cl.exact('Zip Code (int)', 'Zip Code (int)', label='Zip')
+    compare_cl.exact('Address Number (float)', 'Address Number (float)', label='number')
+
+    #compare_cl.numeric('Address Number (float)', 'Address Number (float)',
+    #                   offset=3, scale=2,
+    #                   label='number')
 
     compare_cl.string('Street Name', 'Street Name',
                       method='levenshtein',
                       threshold=0.9,
-                      label='street name')
-
-    #compare_cl.exact('Address Full', 'Address Full', label='addy_full')
-    #compare_cl.exact('Zip Code', 'Zip Code', label='zip')
+                      label='street')
 
     print("Calculating similarities")
     features = compare_cl.compute(pairs, df_full)
@@ -351,6 +470,7 @@ def form_clusters(df_full, features):
     that connects all properties toegether
     """
 
+    features['APN'] = 3 * features['APN']
     matches = features[features.sum(axis=1) >= LINKAGE_THRESHOLD]
 
     graph = nx.Graph()
@@ -378,7 +498,11 @@ def form_clusters(df_full, features):
     
     return df_full
 
+
 if __name__ == '__main__':
+
+    # Telling pylint to ignore the non-global naming scheme in here
+    # pylint: disable=C0103
 
     if os.path.exists(TEMP_OUTPUT_FILE):
         print('Reading temp file from {}'.format(TEMP_OUTPUT_FILE))
@@ -388,7 +512,9 @@ if __name__ == '__main__':
 
     df_data['Address Full'] = df_data['Address Full'].astype(unicode)
     df_data['Street Name'] = df_data['Street Name'].astype(unicode)
-    df_data['Address Number (float)'] = df_data['Address Number'].apply(string_to_numeric)
+    df_data['Address Number (float)'] = df_data['Address Number'].apply(string_to_float)
+    df_data['Zip Code (int)'] = df_data['Zip Code'].apply(string_to_int)
+    df_data['APN (int)'] = df_data['APN'].apply(string_to_int)
 
     if os.path.exists(FEATURES_OUTPUT_FILE):
         print('Loading features from saved file {}'.format(FEATURES_OUTPUT_FILE))
@@ -400,7 +526,7 @@ if __name__ == '__main__':
     # Look at the distribution of feature-scores
     #features.sum(axis=1).value_counts(bins=50).sort_index(ascending=False)
 
-    LINKAGE_THRESHOLD = 2.0
+    LINKAGE_THRESHOLD = 3.0
     df_data = form_clusters(df_data, features)
 
     #aws s3 cp ~/GitHub/la_mayors_office/data/processed/la_housing_dataset_no_geo_property_id.csv s3://datadive-democraticfreedom-nyc/LA\ Mayor\'s\ Office\ -\ Housing/Cleaned\ Data/ 
